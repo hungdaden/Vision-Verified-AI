@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+
+# Cấu hình IDE
+.vscode/
+.idea/
+
+# File tạm của ứng dụng
+_tmp_ela.jpg
+_tmp_jg.jpg
+
+# OS rác
+Thumbs.db
+.DS_Store
+
+# Data/Models (Nếu có file model nặng nên ignore)
+*.pth
+*.onnx
+
+#assets
+assets/
