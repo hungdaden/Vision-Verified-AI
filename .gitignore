@@ -24,3 +24,10 @@ Thumbs.db
 
 #assets
 assets/
+
+*.toc
+*.pkg
+*.zip
+*.pyz
+*.txt
+*.html
