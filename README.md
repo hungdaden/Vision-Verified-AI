@@ -88,6 +88,15 @@ Hệ thống sử dụng chiến lược **Multi-Engine Fusion** (Kết hợp đ
    python main.py
    ```
 
+### 📦 Đóng gói thành phần mềm (.exe)
+Chúng tôi đã cung cấp script tự động để tạo file thực thi và shortcut Desktop:
+```bash
+python build_app.py
+```
+*Sau khi chạy xong:*
+- File `.exe` sẽ nằm trong thư mục `dist/`.
+- Một shortcut sẽ tự động được tạo ra ngoài **Desktop**.
+
 ---
 
 <br><br>
@@ -181,5 +190,14 @@ The application generates a **multi-layer composite heatmap** combining data fro
    ```bash
    python main.py
    ```
+
+### 📦 Packaging to Desktop App (.exe)
+We provide an automated script to create the executable and desktop shortcut:
+```bash
+python build_app.py
+```
+*After completion:*
+- The `.exe` file will be in the `dist/` directory.
+- A shortcut will be automatically created on your **Desktop**.
 
 ---

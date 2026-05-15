@@ -6,24 +6,26 @@ __pycache__/
 venv/
 ENV/
 
-# Cấu hình IDE
-.vscode/
-.idea/
+# Build and Dist
+build/
+dist/
+*.spec
 
-# File tạm của ứng dụng
+# Forensics Temp Files
 _tmp_ela.jpg
 _tmp_jg.jpg
 
-# OS rác
+# IDEs
+.vscode/
+.idea/
+
+# Assets (Originals)
+assets/icon.png
+# assets/icon.ico  <-- Giữ lại nếu muốn đi kèm repo, hoặc bỏ để auto-gen
+
+# OS
 Thumbs.db
-.DS_Store
-
-# Data/Models (Nếu có file model nặng nên ignore)
-*.pth
-*.onnx
-
-#assets
-assets/
+desktop.ini
 
 *.toc
 *.pkg
@@ -31,3 +33,4 @@ assets/
 *.pyz
 *.txt
 *.html
+
