@@ -3,11 +3,52 @@ import numpy as np
 
 
 class FusionEngine:
-    """v3 fusion with noise confirmation and multi-signal agreement."""
+    """v4 fusion with color coherence, cross-suppression, and smart confirmation."""
 
     @staticmethod
     def calculate_results(scores: dict) -> dict:
         noise = scores.get('noise', 0)
+
+        # ── Collect edit signals first (needed for cross-suppression) ──
+        color_dist = scores.get('color_dist', 0)
+        sat_contrast = scores.get('sat_contrast', 0)
+        color_coherence = scores.get('color_coherence', 0)
+        edit_sw = scores.get('edit_software', 0)
+        ela = scores.get('ela', 0)
+        ms_ela = scores.get('multiscale_ela', 0)
+        noise_incon = scores.get('noise_inconsistency', 0)
+        sharpening = scores.get('sharpening', 0)
+
+        # All edit signals with appropriate weights
+        all_edit = [
+            ela * 4,            # ELA (boost, scores typically 0-3)
+            ms_ela * 4,         # Multi-scale ELA
+            color_dist,         # Color grading / filters / curves
+            sat_contrast,       # Saturation / contrast manipulation
+            color_coherence,    # LAB coherence / hue / temperature
+            noise_incon,        # Noise inconsistency (splicing)
+            sharpening,         # Artificial sharpening
+        ]
+
+        # Color-specific signals (weighted higher for color edit detection)
+        color_signals = [color_dist, sat_contrast, color_coherence]
+        max_color = max(color_signals)
+
+        # Primary: strongest signal drives the score
+        top = max(all_edit)
+        # Count elevated signals (agreement)
+        elevated = sum(1 for v in all_edit if v > 8)
+        agreement_bonus = min(elevated * 5, 30)
+
+        if edit_sw > 0:
+            photoshop_edited = max(top, 45) + agreement_bonus
+        else:
+            photoshop_edited = top * 0.85 + agreement_bonus
+
+        # Color signal boost: if multiple color signals agree, boost further
+        color_elevated = sum(1 for v in color_signals if v > 8)
+        if color_elevated >= 2:
+            photoshop_edited += min(max_color * 0.3, 15)
 
         # ── AI Generated ──
         exif_ai = scores.get('exif_ai', 0)
@@ -17,47 +58,32 @@ class FusionEngine:
         # Base: EXIF is primary signal
         ai_generated = exif_ai
 
-        # Confirmatory boost: elevated noise + no EXIF = strong AI signal
-        if exif_ai >= 50 and noise > 18:
-            ai_generated += min((noise - 18) * 1.5, 20)
+        # Confirmatory boost: noise must be BOTH elevated AND consistent
+        # (high noise + low noise_inconsistency = uniform noise = more AI-like)
+        if exif_ai >= 50 and noise > 22:
+            noise_boost = min((noise - 22) * 1.2, 15)
+            if noise_incon < 5:  # Uniform noise = stronger AI signal
+                noise_boost *= 1.3
+            ai_generated += noise_boost
 
-        # Deep features boost (small, capped at 25)
+        # Deep features boost (capped)
         if exif_ai >= 30:
-            ai_generated += deep * 0.4
+            ai_generated += deep * 0.35
 
         # JPEG ghost boost
-        if jpeg_ghost > 10:
-            ai_generated += jpeg_ghost * 0.3
+        if jpeg_ghost > 15:
+            ai_generated += jpeg_ghost * 0.25
 
-        # ── Photoshop / Edited ──
-        color_dist = scores.get('color_dist', 0)
-        sat_contrast = scores.get('sat_contrast', 0)
-        edit_sw = scores.get('edit_software', 0)
-        ela = scores.get('ela', 0)
-        ms_ela = scores.get('multiscale_ela', 0)
-        noise_incon = scores.get('noise_inconsistency', 0)
-        sharpening = scores.get('sharpening', 0)
+        # ── Cross-suppression ──
+        # If strong edit signals are present, the image is likely a real
+        # photo that was edited — suppress AI score
+        if photoshop_edited > 25 and exif_ai <= 70:
+            suppression = min(photoshop_edited * 0.4, 30)
+            ai_generated -= suppression
 
-        # Collect all edit signals
-        all_edit = [
-            ela * 4,           # ELA (boost because scores are typically 0-3)
-            ms_ela * 4,        # Multi-scale ELA
-            color_dist,        # Color grading / filters
-            sat_contrast,      # Saturation / contrast manipulation
-            noise_incon,       # Noise inconsistency (splicing)
-            sharpening,        # Artificial sharpening
-        ]
-
-        # Primary: strongest signal drives the score
-        top = max(all_edit)
-        # Secondary: count how many signals are elevated (agreement)
-        elevated = sum(1 for v in all_edit if v > 10)
-        agreement_bonus = min(elevated * 5, 25)  # Up to +25 for multiple signals
-
-        if edit_sw > 0:
-            photoshop_edited = max(top, 45) + agreement_bonus
-        else:
-            photoshop_edited = top * 0.8 + agreement_bonus
+        # If EXIF-only AI signal (no other confirmation), cap it
+        if exif_ai >= 50 and deep <= 5 and jpeg_ghost <= 10 and noise < 20:
+            ai_generated = min(ai_generated, 55)
 
         # ── Deepfake ──
         deepfake = scores.get('deepfake', 0)

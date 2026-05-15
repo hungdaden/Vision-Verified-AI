@@ -53,6 +53,9 @@ class AnalysisWorker(QThread):
             self.status.emit("Saturation & Contrast Analysis...")
             s['sat_contrast'] = ForensicEngine.run_saturation_contrast(p)
 
+            self.status.emit("Color Coherence Analysis...")
+            s['color_coherence'] = ForensicEngine.run_color_coherence(p)
+
             self.status.emit("Deepfake Analysis...")
             s['deepfake'], face_data = ForensicEngine.detect_deepfake(p)
 

@@ -52,27 +52,106 @@ class ForensicEngine:
     # ═══════════════════════════════════════════
 
     @staticmethod
+    def _hist_gap_ratio(hist, lo=10, hi=246):
+        """Compute gap ratio in histogram mid-range. Curves/levels create gaps."""
+        mid = hist[lo:hi]
+        total = mid.sum()
+        if total < 100:
+            return 0.0
+        nz = np.where(mid > total * 0.00005)[0]
+        if len(nz) < 15:
+            return 0.0
+        span = nz[-1] - nz[0] + 1
+        if span < 25:
+            return 0.0
+        populated = np.sum(mid[nz[0]:nz[-1] + 1] > 0)
+        return 1.0 - (populated / span)
+
+    @staticmethod
     def run_color_distribution(image_path):
+        """
+        Detects color manipulation: curves, levels, color grading, filters.
+        Analyses histogram gaps, roughness, and channel correlations in
+        both RGB and HSV spaces.
+        """
         img = cv2.imread(image_path)
         if img is None:
             return 0
         score = 0.0
+        total_gap = 0.0
+        total_roughness = 0.0
+
+        # ── RGB histogram analysis ──
         for ch in range(3):
             hist = cv2.calcHist([img], [ch], None, [256], [0, 256]).flatten()
-            hist_n = hist / (hist.sum() + 1e-8)
-            clip_lo = hist_n[:3].sum()
-            clip_hi = hist_n[253:].sum()
-            if clip_lo > 0.08:
-                score += (clip_lo - 0.08) * 200
-            if clip_hi > 0.08:
-                score += (clip_hi - 0.08) * 200
-            nz = np.where(hist > hist.sum() * 0.0003)[0]
+            total_px = hist.sum()
+            hist_n = hist / (total_px + 1e-8)
+
+            # Clipping detection (lowered threshold)
+            clip_lo = hist_n[:4].sum()
+            clip_hi = hist_n[252:].sum()
+            if clip_lo > 0.05:
+                score += (clip_lo - 0.05) * 250
+            if clip_hi > 0.05:
+                score += (clip_hi - 0.05) * 250
+
+            # Narrow dynamic range
+            nz = np.where(hist > total_px * 0.0003)[0]
             if len(nz) > 0 and (nz[-1] - nz[0]) < 150:
                 score += (150 - (nz[-1] - nz[0])) * 0.15
+
+            # Histogram gap/comb detection
+            total_gap += ForensicEngine._hist_gap_ratio(hist)
+
+            # Histogram roughness (jaggedness from value remapping)
+            kernel = np.ones(7) / 7
+            smoothed = np.convolve(hist_n, kernel, mode='same')
+            roughness = np.mean(np.abs(hist_n[15:240] - smoothed[15:240]))
+            total_roughness += roughness
+
+        # ── HSV histogram gap analysis ──
+        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+        for ch_idx in [1, 2]:  # Saturation and Value channels
+            h_hist = cv2.calcHist([hsv], [ch_idx], None, [256], [0, 256]).flatten()
+            gap = ForensicEngine._hist_gap_ratio(h_hist, lo=5, hi=250)
+            if gap > 0.02:
+                total_gap += gap * 1.5  # HSV gaps weigh more for color edits
+
+        # Gap scoring
+        if total_gap > 0.02:
+            score += min(total_gap * 180, 50)
+
+        # Roughness scoring
+        if total_roughness > 0.004:
+            score += min((total_roughness - 0.004) * 2500, 20)
+
+        # ── Channel correlation ──
+        # Natural photos: R,G,B are highly correlated
+        # Color grading breaks this correlation
+        b, g, r = cv2.split(img)
+        step = max(1, img.shape[0] * img.shape[1] // 40000)
+        r_s = r.flatten()[::step].astype(np.float64)
+        g_s = g.flatten()[::step].astype(np.float64)
+        b_s = b.flatten()[::step].astype(np.float64)
+
+        def _safe_corr(a, b_arr):
+            if np.std(a) < 1 or np.std(b_arr) < 1:
+                return 1.0
+            return np.corrcoef(a, b_arr)[0, 1]
+
+        corrs = [_safe_corr(r_s, g_s), _safe_corr(r_s, b_s), _safe_corr(g_s, b_s)]
+        min_corr = min(corrs)
+        if min_corr < 0.78:
+            score += (0.78 - min_corr) * 100
+
         return float(np.clip(score, 0, 100))
 
     @staticmethod
     def run_saturation_contrast(image_path):
+        """
+        Detects saturation/contrast manipulation via HSV statistics,
+        distribution shape analysis, and CDF linearity testing.
+        """
         img = cv2.imread(image_path)
         if img is None:
             return 0
@@ -80,22 +159,124 @@ class ForensicEngine:
         s = hsv[:, :, 1].astype(np.float64)
         v = hsv[:, :, 2].astype(np.float64)
         score = 0.0
+
+        # ── Saturation analysis ──
         ms = np.mean(s)
-        if ms > 150:
-            score += (ms - 150) * 0.8
+        if ms > 115:
+            score += (ms - 115) * 0.6
         elif ms < 15:
             score += (15 - ms) * 2
+
+        # Saturation kurtosis: edited images tend to have peakier distribution
+        s_std = np.std(s)
+        if s_std > 1:
+            s_kurt = float(np.mean(((s - ms) / s_std) ** 4) - 3.0)
+            if s_kurt > 3.0:
+                score += min((s_kurt - 3.0) * 3, 20)
+
+        # Saturation uniformity: low std relative to mean = artificial boost
+        if ms > 60 and s_std < ms * 0.25:
+            score += min((ms * 0.25 - s_std) * 0.5, 15)
+
+        # ── Brightness / contrast analysis ──
         bright = np.mean(v > 220)
         dark = np.mean(v < 30)
-        if bright > 0.25 and dark > 0.25:
+        if bright > 0.20 and dark > 0.20:
             score += 20
+
+        # Center vs edge brightness (vignette detection)
         h, w = v.shape
         ctr = np.mean(v[h // 4:3 * h // 4, w // 4:3 * w // 4])
         edg = np.mean(np.concatenate([
             v[:h // 4].flatten(), v[3 * h // 4:].flatten(),
             v[:, :w // 4].flatten(), v[:, 3 * w // 4:].flatten()]))
-        if ctr - edg > 35:
-            score += min(ctr - edg - 35, 30)
+        if ctr - edg > 30:
+            score += min(ctr - edg - 30, 30)
+
+        # ── CDF linearity test ──
+        # Natural photos have smooth CDF; curves/levels create kinks
+        v_hist = cv2.calcHist([hsv], [2], None, [256], [0, 256]).flatten()
+        cdf = np.cumsum(v_hist).astype(np.float64)
+        cdf /= (cdf[-1] + 1e-8)
+        # Fit linear between 5th and 95th percentile
+        p5 = np.searchsorted(cdf, 0.05)
+        p95 = np.searchsorted(cdf, 0.95)
+        if p95 - p5 > 20:
+            x = np.arange(p5, p95)
+            y = cdf[p5:p95]
+            linear = np.linspace(y[0], y[-1], len(y))
+            deviation = np.mean(np.abs(y - linear))
+            if deviation > 0.04:
+                score += min((deviation - 0.04) * 300, 25)
+
+        return float(np.clip(score, 0, 100))
+
+    @staticmethod
+    def run_color_coherence(image_path):
+        """
+        Detects color grading / filter via LAB color space analysis,
+        hue distribution, and color temperature estimation.
+        """
+        img = cv2.imread(image_path)
+        if img is None:
+            return 0
+        score = 0.0
+
+        # ── LAB analysis ──
+        lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+        l_ch = lab[:, :, 0].astype(np.float64)
+        a_ch = lab[:, :, 1].astype(np.float64)
+        b_ch = lab[:, :, 2].astype(np.float64)
+
+        # Color cast detection: natural photos have a/b centered near 128
+        a_mean = np.mean(a_ch)
+        b_mean = np.mean(b_ch)
+        cast_dist = np.sqrt((a_mean - 128) ** 2 + (b_mean - 128) ** 2)
+        if cast_dist > 12:
+            score += min((cast_dist - 12) * 2.0, 25)
+
+        # a/b channel correlation with L (color grade often ties color to tone)
+        step = max(1, img.shape[0] * img.shape[1] // 30000)
+        l_s = l_ch.flatten()[::step]
+        a_s = a_ch.flatten()[::step]
+        b_s = b_ch.flatten()[::step]
+
+        if np.std(l_s) > 1 and np.std(a_s) > 0.5:
+            corr_la = abs(np.corrcoef(l_s, a_s)[0, 1])
+            # Strong L-a correlation = split toning / color grading
+            if corr_la > 0.35:
+                score += min((corr_la - 0.35) * 40, 20)
+
+        if np.std(l_s) > 1 and np.std(b_s) > 0.5:
+            corr_lb = abs(np.corrcoef(l_s, b_s)[0, 1])
+            if corr_lb > 0.35:
+                score += min((corr_lb - 0.35) * 40, 20)
+
+        # ── Hue distribution analysis ──
+        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+        h_ch = hsv[:, :, 0].astype(np.float64)
+        s_ch = hsv[:, :, 1].astype(np.float64)
+
+        # Only consider sufficiently saturated pixels for hue analysis
+        sat_mask = s_ch > 30
+        if np.sum(sat_mask) > 500:
+            hues = h_ch[sat_mask]
+            h_hist = np.histogram(hues, bins=36, range=(0, 180))[0]
+            h_hist_n = h_hist / (h_hist.sum() + 1e-8)
+            # Hue entropy: color grading often concentrates hues
+            h_entropy = -np.sum(h_hist_n[h_hist_n > 0] * np.log2(h_hist_n[h_hist_n > 0]))
+            max_entropy = np.log2(36)
+            # Very low entropy = heavily color graded
+            if h_entropy < max_entropy * 0.45:
+                score += min((max_entropy * 0.45 - h_entropy) * 8, 20)
+
+        # ── Color temperature: warm/cool bias ──
+        b_mean_rgb = np.mean(img[:, :, 0].astype(np.float64))
+        r_mean_rgb = np.mean(img[:, :, 2].astype(np.float64))
+        temp_bias = abs(r_mean_rgb - b_mean_rgb)
+        if temp_bias > 25:
+            score += min((temp_bias - 25) * 0.5, 15)
+
         return float(np.clip(score, 0, 100))
 
     # ═══════════════════════════════════════════
